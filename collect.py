@@ -775,15 +775,30 @@ def main():
     # экономики считаются по кабинету, а весь дашборд — по бренду.
     orders, sales = {}, {}
     if WAREHOUSE:
-        log("  складской режим: финотчёт, реклама и продажи не выгружаются")
+        # Заказы и продажи нужны разделу «Сроки и путь заказа»: он считает,
+        # за сколько дней заказ доезжает до ПВЗ и до выкупа. Денег в них не
+        # берём — цена обнуляется в своде. Финотчёт и реклама не выгружаются
+        # вовсе: без них прогон занимает пару минут вместо двадцати.
+        log("  складской режим: финотчёт и реклама не выгружаются")
+        for key, title, tok in CABS:
+            log(f"  [{title}] заказы")
+            o = pull_stat(tok, "/api/v1/supplier/orders", "заказы", START)
+            b = [r for r in by_brand(o, NMS[key])
+                 if r.get("date", "")[:10] >= START.isoformat()]
+            log(f"    бренд: {len(b)} заказов из {len(o)}")
+            save(f"orders_{key}", b)
+        time.sleep(62)
+        for key, title, tok in CABS:
+            log(f"  [{title}] продажи")
+            sl = pull_stat(tok, "/api/v1/supplier/sales", "продажи", START, key="saleID+srid")
+            save(f"sales_{key}", by_brand(sl, NMS[key]))
         for key, title, tok in CABS:
             log(f"  [{title}] сборка и отгрузка")
             asm = int(os.environ.get("ASSEMBLY_DAYS", "30"))
             if START_DATE:
                 asm = min(asm, (TODAY - START_DATE).days + 1)
             save(f"mp_{key}", pull_marketplace(tok, asm, NMS[key]))
-            save(f"orders_{key}", [])
-            save(f"sales_{key}", [])
+            save(f"adv_{key}", [])
         log("готово")
         return
 

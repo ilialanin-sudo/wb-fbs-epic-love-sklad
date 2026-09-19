@@ -218,7 +218,7 @@ details .body code{background:color-mix(in oklab,var(--ink) 7%,transparent);padd
     <div class="scroll"><table><thead><tr>
       <th>Период</th><th>Создано заданий</th><th>Отгружено</th><th>Отменено до отгрузки</th>
       <th class="hide-s">Брак</th><th>Ещё на сборке</th><th>Уехало в эти дни, шт</th>
-      <th class="hide-s">Уехало, ₽</th>
+      <th class="hide-s col-money">Уехало, ₽</th>
     </tr></thead><tbody id="asm-tbl"></tbody></table></div>
     <p class="tiny" style="margin-top:10px">Проценты — доля от «создано заданий»; отгружено, отменено, брак и «ещё на сборке» в сумме дают ровно 100 %. Первые пять колонок — что стало с заданиями, созданными в периоде. Отмена здесь — только та, что случилась до отгрузки; если покупатель отказался от уже уехавшего заказа, задание остаётся отгруженным, а сам отказ виден ниже в выкупе по когортам. Последние две — сколько физически уехало именно в эти дни, независимо от того, когда заказ пришёл. Раздел сборки обновляется быстрее статистики, поэтому за сегодня «создано заданий» бывает чуть больше, чем «заказов FBS» наверху.</p>
     <div style="margin-top:18px" id="tim-wrap">
@@ -468,6 +468,8 @@ details .body code{background:color-mix(in oklab,var(--ink) 7%,transparent);padd
     </div>
   </div><!-- /work-body -->
 
+  <div id="ship-body" style="display:none"></div>
+
   <div class="qrbox" id="qrbox"><div id="qrbig"></div></div>
 
   <div id="fbw-body" style="display:none">
@@ -658,6 +660,7 @@ const NCAB = (D.cabinets||[]).length;
 const SUB_STG = "Заказы FBS по этапам пути: штуки, деньги по цене продавца и себестоимость — в тотале и по каждому артикулу.";
 const SUB_FBS = (NCAB>1 ? NCAB+" кабинета одного бренда. " : "")
   + "В расчёт идут только заказы со склада продавца — модель FBW исключена целиком.";
+const SUB_SHIP = "Что происходит со сборочными заданиями: сколько уехало, где сейчас едут заказы и за сколько часов поставки доезжают до приёмки WB.";
 const SUB_WORK = "Задания, взятые в сборку, и открытые поставки бренда с их QR-кодами. Снимок на момент последнего обновления страницы.";
 const SUB_PICK = "Снимок сборочных заданий на момент последнего обновления страницы: что нужно собрать и отгрузить. Периоды к этой вкладке не применяются.";
 const SUB_FBW = "Отдельный разрез по складу WB: сколько идёт доставка и сколько заказов выкупают. В юнит-экономику FBS ничего отсюда не попадает.";
@@ -694,6 +697,7 @@ const TABS = (NOMONEY ? [] : [{key:"fbs", title:"FBS", note:"заказы и э�
   .concat((D.picking && Object.keys(D.picking).length)
           ? [{key:"pick", title:"Новые", note:"ещё не взяты в работу"},
              {key:"work", title:"На сборке", note:"поставки и QR"}] : [])
+  .concat((NOMONEY && D.assembly_total) ? [{key:"ship", title:"Отгрузка", note:"сроки и скорость"}] : [])
   .concat((D.stage_meta && D.stages_total) ? [{key:"stg", title:"Этапы", note:"воронка и суммы"}] : [])
   .concat((D.fbw && Object.keys(D.fbw).length) ? [{key:"fbw", title:"FBW", note:"доставка и выкуп"}] : []);
 let TAB = NOMONEY ? "pick" : "fbs";
@@ -708,7 +712,13 @@ $("#pers").innerHTML = (D.period_meta||[]).map(p=>
   `<button data-per="${p.key}" aria-pressed="${p.key===PER}">${p.label}<small>${
     p.days===1 ? dmy(p.start) : dmy(p.start)+"–"+dmy(p.end)}</small></button>`).join("")
   + (NOMONEY ? "" : `<button data-per="range" aria-pressed="false">Свой период<small>календарь</small></button>`);
-if(NOMONEY){ $("#pers").parentElement.style.display = "none"; $("#fbsonly").style.display = "none"; }
+if(NOMONEY){
+  $("#pers").parentElement.style.display = "none"; $("#fbsonly").style.display = "none";
+  // карточка «Сборка и отгрузка» живёт внутри вкладки FBS, которой здесь нет —
+  // переносим её целиком в отдельную вкладку, чтобы не дублировать разметку
+  const card = $("#asm-card");
+  if(card) $("#ship-body").appendChild(card);
+}
 
 const allDays = (D.cohorts_total||[]).map(r=>r.date).sort();
 const DMIN = allDays[0], DMAX = allDays[allDays.length-1];
@@ -777,7 +787,8 @@ function assembly(){
   const n = A.now;
   const stale = n.oldest && n.oldest < new Date(Date.now()-864e5).toISOString().slice(0,10);
   $("#asm-now").innerHTML = [
-    {lab:"Сейчас на сборке", val:fmt(n.total)+" шт", note:money(n.total_sum), hero:true},
+    {lab:"Сейчас на сборке", val:fmt(n.total)+" шт",
+     note:NOMONEY?"заданий не уехало":money(n.total_sum), hero:true},
     {lab:"Не взято в работу", val:fmt(n.fresh)+" шт", note:"новые задания, поставка не создана"},
     {lab:"Собрано в поставку", val:fmt(n.in_supply)+" шт", note:"поставка ещё не закрыта"},
     {lab:"Самое старое задание", val:n.oldest?dmy(n.oldest)+", "+dow(n.oldest):"—",
@@ -799,7 +810,7 @@ function assembly(){
       <td class="hide-s ${p.defect?"neg":""}">${fmt(p.defect)}${sh(p.defect)}</td>
       <td><b>${fmt(p.assembling)}</b>${sh(p.assembling)}</td>
       <td>${fmt(p.shipped_in_days)}</td>
-      <td class="hide-s">${fmt(p.shipped_in_days_sum)}</td></tr>`;
+      ${NOMONEY?"":`<td class="hide-s">${fmt(p.shipped_in_days_sum)}</td>`}</tr>`;
   }).join("");
 
   timing(A);
@@ -829,8 +840,8 @@ function timing(A){
      note:"за столько доезжает половина заказов", hero:true},
     {lab:"Заказ → выкуп", val:dd(T.to_buyout&&T.to_buyout.median),
      note:T.to_buyout?fmt(T.to_buyout.qty)+" выкупов в расчёте":"данных мало"},
-    {lab:"Невыкуп → товар на складе", val:dd(T.return_lag&&T.return_lag.median),
-     note:T.return_lag?fmt(T.return_lag.qty)+" возвратов в расчёте":"ждём закрытия финотчёта"},
+    ...(NOMONEY ? [] : [{lab:"Невыкуп → товар на складе", val:dd(T.return_lag&&T.return_lag.median),
+     note:T.return_lag?fmt(T.return_lag.qty)+" возвратов в расчёте":"ждём закрытия финотчёта"}]),
     {lab:"Едут прямо сейчас", val:fmt((T.funnel.find(f=>f.key==="sorted")||{}).qty||0)+" шт",
      note:"плюс "+fmt((T.funnel.find(f=>f.key==="ready_for_pickup")||{}).qty||0)+" ждут на ПВЗ"},
   ].map(c=>`<div class="kpi${c.hero?" hero":""}">
@@ -916,10 +927,11 @@ function speed(A){
   const risk = (S.queue_buckets||[]).reduce((a,v,i)=>i>0?a+v:a,0);
   $("#spd-now").innerHTML = [
     {lab:"Поправка к комиссии", val:pp(S.delta), note:"лучшая возможная "+pp(S.best_delta), hero:true},
-    {lab:"Недобираем", val:pp(-S.gap), note:money(S.gap_money)+" за 10 дней"},
+    {lab:"Недобираем", val:pp(-S.gap),
+     note:NOMONEY?"до лучшей ставки":money(S.gap_money)+" за 10 дней"},
     {lab:"В очереди рискуют", val:fmt(risk)+" шт", note:risk?"уже вышли за 13 часов":"все ещё в максимальной скидке"},
-    {lab:"Уже потеряно на очереди", val:money(S.queue_lost_money), note:pp(-S.queue_lost)+" на "+money(S.queue_sum)},
-  ].map(c=>`<div class="kpi${c.hero?" hero":""}">
+  ].concat(NOMONEY ? [] : [{lab:"Уже потеряно на очереди", val:money(S.queue_lost_money),
+                            note:pp(-S.queue_lost)+" на "+money(S.queue_sum)}]).map(c=>`<div class="kpi${c.hero?" hero":""}">
       <div class="lab">${c.lab}</div><div class="val${String(c.val).length>13?" sm":""}">${c.val}</div>
       <div class="note">${c.note}</div></div>`).join("");
 
@@ -1737,26 +1749,30 @@ function render(){
   document.querySelectorAll("#tabs button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.tab===TAB));
   document.querySelectorAll("#cabs button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.cab===CAB));
   document.querySelectorAll("#pers button").forEach(b=>b.setAttribute("aria-pressed", b.dataset.per===PER));
-  const isFbw = TAB==="fbw", isStg = TAB==="stg", isPick = TAB==="pick", isWork = TAB==="work";
+  const isFbw = TAB==="fbw", isStg = TAB==="stg", isPick = TAB==="pick",
+        isWork = TAB==="work", isShip = TAB==="ship";
   // FBW — отдельная вкладка: периоды и оговорка «только FBS» к ней не относятся
-  $("#fbs-body").style.display = (isFbw||isStg||isPick||isWork) ? "none" : "";
+  $("#fbs-body").style.display = (isFbw||isStg||isPick||isWork||isShip) ? "none" : "";
   $("#fbw-body").style.display = isFbw ? "" : "none";
   $("#stg-body").style.display = isStg ? "" : "none";
   $("#pick-body").style.display = isPick ? "" : "none";
   $("#work-body").style.display = isWork ? "" : "none";
+  $("#ship-body").style.display = isShip ? "" : "none";
   // листы сборки — снимок «прямо сейчас», периоды к ним не применимы
-  $("#pers").style.display = (isPick||isWork) ? "none" : "";
+  $("#pers").style.display = (isPick||isWork||isShip) ? "none" : "";
   $("#fbsonly").style.display = isFbw ? "none" : "";
   $("#ttl").textContent = isFbw ? "FBW · путь заказа и сроки доставки"
                 : isStg ? "FBS · суммы по этапам"
                 : isPick ? (NOMONEY ? "Склад · новые задания" : "FBS · новые задания")
                 : isWork ? (NOMONEY ? "Склад · на сборке и поставки" : "FBS · на сборке и поставки")
+                : isShip ? "Склад · сроки и скорость отгрузки"
                         : "FBS · заказы и юнит-экономика";
-  $("#sub").textContent = isFbw ? SUB_FBW : isStg ? SUB_STG
+  $("#sub").textContent = isFbw ? SUB_FBW : isStg ? SUB_STG : isShip ? SUB_SHIP
                         : isPick ? SUB_PICK : isWork ? SUB_WORK : SUB_FBS;
   $("#rangebox").style.display = (PER==="range" && !isStg && !isPick && !isWork) ? "inline-flex" : "none";
   if(isPick){ pickRender(); return; }
   if(isWork){ workRender(); return; }
+  if(isShip){ assembly(); return; }
   if(isFbw){ fbwRender(); return; }
   if(isStg){ stgRender(); return; }
   flags(); kpis(); assembly(); retRender(); waterfall(); charts(); cohorts(); skus();

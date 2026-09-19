@@ -62,9 +62,8 @@ if not CABS:
 if not CABS:
     sys.exit("не найден ни один кабинет: добавьте блок \"cabinets\" в config.json")
 FALLBACK = CFG.get("rates_fallback", "cabinet")   # cabinet | none
-# Складской режим: на странице только то, что нужно сборщику. Ни цен, ни выручки,
-# ни себестоимости, ни маржи — и не спрятанных, а отсутствующих в данных:
-# страница публичная, из исходника всё равно было бы видно.
+# Складской режим: страница для сборщиков. Денег в ней нет и в данных тоже —
+# они публичные, прятать суммы стилями бессмысленно.
 WAREHOUSE = str(CFG.get("mode", "")).lower() == "warehouse"
 
 cost_by_nm = {int(k): float(v) for k, v in (COST.get("by_nmid") or {}).items() if v}
@@ -400,6 +399,17 @@ def assembly(cab):
                   to_buyout=to_buyout,
                   return_lag=(RATES.get(cab) or {}).get("return_lag"))
 
+    if WAREHOUSE:
+        now["total_sum"] = None
+        for v in per.values():
+            v["created_sum"] = v["shipped_in_days_sum"] = None
+        for v in series:
+            v["shipped_sum"] = v["created_sum"] = None
+        for sp in [speed] + list(speed_wh.values()):
+            sp["sum"] = sp["gap_money"] = sp["queue_sum"] = sp["queue_lost_money"] = None
+            for d in sp.get("days") or []:
+                d["sum"] = None
+                d["buckets_sum"] = None
     return dict(now=now, periods=per, days=series, speed=speed,
                 speed_wh=speed_wh, warehouses=wh_list,
                 timing=timing, total_tasks=len(rows))
@@ -506,8 +516,8 @@ def picking(cab):
         late=sum(1 for r in rows if r["late"]),
         hot=sum(1 for r in rows if r["hot"]),
         summ=(None if WAREHOUSE else round(sum(r["price"] for r in rows), 2)),
-        in_supply=sum(1 for r in rows if r["in_supply"]),
         money=not WAREHOUSE,
+        in_supply=sum(1 for r in rows if r["in_supply"]),
         oldest=rows[0]["created"] if rows else None,
         generated=NOW.isoformat(timespec="seconds"),
     )
@@ -1063,28 +1073,6 @@ def cabinet(cab):
 
 
 # --------------------------------------------------------------------- сборка
-if WAREHOUSE:
-    PICK = {}
-    for cab, title in CABS:
-        pk = picking(cab)
-        if pk:
-            PICK[cab] = pk
-    out = dict(
-        generated_at=NOW.isoformat(timespec="seconds"),
-        generated_human=NOW.strftime("%d.%m.%Y %H:%M"),
-        brand=BRAND, model="FBS · склад продавца", mode="warehouse",
-        cabinets=[dict(key=c, title=t) for c, t in CABS if c in PICK],
-        picking=PICK,
-    )
-    with open(os.path.join(BASE, "dashboard_data.json"), "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=1, default=str)
-    for c, t in CABS:
-        if c in PICK:
-            p = PICK[c]
-            print(f"{t}: к сборке {p['total']} (новых {p['fresh']}, в работе {p['taken']}), "
-                  f"просрочено {p['late']}, поставок {len(p['supplies'])}")
-    sys.exit(0)
-
 ASM = {}
 PICK = {}
 res = {}
@@ -1092,13 +1080,16 @@ FBW_RAW = {}
 RET = {}
 for cab, title in CABS:
     if os.path.exists(os.path.join(DATA, f"orders_{cab}.json.gz")):
-        res[cab] = cabinet(cab)
+        if not WAREHOUSE:
+            res[cab] = cabinet(cab)
         pk = picking(cab)
         if pk:
             PICK[cab] = pk
         a = assembly(cab)
         if a:
             ASM[cab] = a
+        if WAREHOUSE:
+            continue
         f = fbw_timing(cab)
         if f:
             FBW_RAW[cab] = f
@@ -1110,7 +1101,7 @@ for cab, title in CABS:
         rr = returns(cab, nm_art)
         if rr:
             RET[cab] = rr
-if not res:
+if not res and not WAREHOUSE:
     sys.exit("нет выгрузок в data/ — сначала запустите collect.py")
 
 SUMS = ["ord_qty", "ord_sum", "ord_customer", "cancel_qty", "bought_qty", "bought_sum",
@@ -1179,7 +1170,8 @@ asm_total = None
 if ASM:
     asm_total = dict(now={}, periods={}, days=[], total_tasks=sum(a["total_tasks"] for a in ASM.values()))
     for f in ("total", "total_sum", "fresh", "in_supply"):
-        asm_total["now"][f] = sum(a["now"][f] for a in ASM.values())
+        vals = [a["now"][f] for a in ASM.values()]
+        asm_total["now"][f] = None if any(v is None for v in vals) else sum(vals)
     asm_total["now"]["oldest"] = min((a["now"]["oldest"] for a in ASM.values()
                                       if a["now"]["oldest"]), default=None)
     for key, label, back, back_hi in ASM_PERIODS:
@@ -1188,7 +1180,8 @@ if ASM:
         agg["start"], agg["end"] = first["start"], first["end"]
         for f in ("created", "created_sum", "shipped", "cancel", "defect",
                   "assembling", "shipped_in_days", "shipped_in_days_sum"):
-            agg[f] = sum(a["periods"][key][f] for a in ASM.values())
+            vals = [a["periods"][key][f] for a in ASM.values()]
+            agg[f] = None if any(v is None for v in vals) else sum(vals)
         asm_total["periods"][key] = agg
     # скорость отгрузки — суммарно
     nb = len(SPEED)
@@ -1200,8 +1193,8 @@ if ASM:
         for row in sp.get("days") or []:
             t = sd[row["date"]]
             t["qty"] += row["qty"]
-            t["sum"] += row["sum"]
-            t["dw"] += (row["delta"] or 0) * row["sum"]
+            t["sum"] += row["sum"] or 0
+            t["dw"] += (row["delta"] or 0) * (row["sum"] or 0)
             t["created"] += row.get("created", 0)
             t["shipped"] += row.get("shipped", 0)
             t["pending"] += row.get("pending", 0)
@@ -1209,8 +1202,8 @@ if ASM:
             for i in range(nb):
                 t["b"][i] += row["buckets"][i]
         q["qty"] += sp.get("queue_qty", 0)
-        q["sum"] += sp.get("queue_sum", 0)
-        q["lost"] += sp.get("queue_lost_money", 0) * 100
+        q["sum"] += sp.get("queue_sum") or 0
+        q["lost"] += (sp.get("queue_lost_money") or 0) * 100
         for i in range(nb):
             q["b"][i] += (sp.get("queue_buckets") or [0] * nb)[i]
     days_sp = [dict(date=d, created=t["created"], shipped=t["shipped"],
@@ -1287,7 +1280,7 @@ if ASM:
     for a in ASM.values():
         for row in a["days"]:
             for f in ("shipped", "shipped_sum", "created", "created_sum"):
-                dd[row["date"]][f] += row[f]
+                dd[row["date"]][f] += row[f] or 0
     asm_total["days"] = [dict(date=d, **{f: round(v, 2) for f, v in x.items()})
                          for d, x in sorted(dd.items())]
 
@@ -1424,6 +1417,46 @@ stage_meta = dict(cum=[dict(key=k, label=lb) for k, lb in STG_CUM],
                   state=[dict(key=k, label=lb) for k, lb in STG_STATE],
                   first_day=stg_days[0] if stg_days else None,
                   last_day=stg_days[-1] if stg_days else None)
+
+if WAREHOUSE:
+    if asm_total:
+        asm_total["now"]["total_sum"] = None
+        for v in asm_total["periods"].values():
+            v["created_sum"] = v["shipped_in_days_sum"] = None
+        sp = asm_total.get("speed") or {}
+        sp["sum"] = sp["gap_money"] = sp["queue_sum"] = sp["queue_lost_money"] = None
+        for d in sp.get("days") or []:
+            d["sum"] = None
+        asm_total["days"] = [dict(date=x["date"], shipped=x.get("shipped"),
+                                  created=x.get("created"))
+                             for x in (asm_total.get("days") or [])]
+    # коэффициент скорости взвешен деньгами, а их в этом режиме нет: у свода
+    # «итого» делить стало не на что. Кабинет здесь один — берём его значения
+    if asm_total and len(ASM) == 1:
+        only = next(iter(ASM.values()))
+        asm_total["speed"] = only["speed"]
+        asm_total["speed_wh"] = only.get("speed_wh") or {}
+    wh_out = dict(
+        generated_at=NOW.isoformat(timespec="seconds"),
+        generated_human=NOW.strftime("%d.%m.%Y %H:%M"),
+        brand=BRAND, model="FBS · склад продавца", mode="warehouse",
+        cabinets=[dict(key=c, title=t) for c, t in CABS if c in PICK or c in ASM],
+        picking=PICK,
+        assembly={c: ASM[c] for c in ASM},
+        assembly_total=asm_total,
+        assembly_periods=[dict(key=k, label=l, days=b - h + 1) for k, l, b, h in ASM_PERIODS],
+        speed_buckets=SPEED,
+        meta={c: dict(first_order=None, warehouses=(ASM[c].get("warehouses") or []))
+              for c in ASM},
+    )
+    with open(os.path.join(BASE, "dashboard_data.json"), "w", encoding="utf-8") as f:
+        json.dump(wh_out, f, ensure_ascii=False, indent=1, default=str)
+    for c, t in CABS:
+        if c in PICK:
+            pk = PICK[c]
+            print(f"{t}: к сборке {pk['total']} (новых {pk['fresh']}), "
+                  f"просрочено {pk['late']}, поставок {len(pk['supplies'])}")
+    sys.exit(0)
 
 out = dict(
     generated_at=NOW.isoformat(timespec="seconds"),
